@@ -1,32 +1,20 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings('ignore')
+import tensorflow as tf
 import segmentation_models as sm
 import albumentations as A
 import cv2
 import tensorflow.keras as keras
-import tensorflow as tf
-from skimage.io import imread
-import numpy as np
-from matplotlib import pyplot as plt
 import os
-from glob import glob
-import random
-import itertools
-from skimage import util
-from tqdm import tqdm_notebook
+x_train_dir = './train/image_chips'
+y_train_dir = './train/labels'
 
-import warnings
-warnings.filterwarnings('ignore')
-
-
-
-
-tf.config.run_functions_eagerly(True)
-x_train_dir = '../input/electrical-substation-detection/train/image_chips'
-y_train_dir = '../input/electrical-substation-detection/train/labels'
-
-x_valid_dir = '../input/electrical-substation-detection/validation/image_chips'
-y_valid_dir = '../input/electrical-substation-detection/validation/labels'
-
-
+x_valid_dir = './validation/image_chips'
+y_valid_dir = './validation/labels'
+# helper function for data visualization
+os.environ['TF_XLA_FLAGS'] = '--tf_xla_enable_xla_devices'
 def visualize(**images):
     """PLot images in one row."""
     n = len(images)
@@ -38,7 +26,6 @@ def visualize(**images):
         plt.title(' '.join(name.split('_')).title())
         plt.imshow(image)
     plt.show()
-
 
 # helper function for data visualization
 def denormalize(x):
@@ -91,7 +78,7 @@ class Dataset:
         image = cv2.imread(self.images_fps[i])
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         mask = cv2.imread(self.masks_fps[i], 0)
-        mask = mask / mask.max()
+        mask = mask/mask.max()
 
         # extract certain classes from mask (e.g. cars)
         masks = [(mask == v) for v in self.class_values]
@@ -158,25 +145,14 @@ class Dataloder(keras.utils.Sequence):
         if self.shuffle:
             self.indexes = np.random.permutation(self.indexes)
 
-# Lets look at data we have
-dataset = Dataset(x_train_dir, y_train_dir, classes=['NoDetect', 'ES'])
-
-image, mask = dataset[10] # get some sample
-visualize(
-    image=image,
-    substation_mask=mask[..., 1].squeeze(),
-)
-
-IMG_SIZE = 512
+IMG_SIZE = 256
 
 
 def round_clip_0_1(x, **kwargs):
     return x.round().clip(0, 1)
 
-
 def normalize_albumenation(x, **kwargs):
     return x
-
 
 # define heavy augmentations
 def get_training_augmentation():
@@ -231,7 +207,6 @@ def get_validation_augmentation():
     ]
     return A.Compose(test_transform)
 
-
 def get_preprocessing(preprocessing_fn):
     """Construct preprocessing transform
 
@@ -248,24 +223,13 @@ def get_preprocessing(preprocessing_fn):
         A.Lambda(image=normalize_albumenation)
     ]
     return A.Compose(_transform)
-
-
-
-#  Lets look at augmented data we have
-dataset = Dataset(x_train_dir, y_train_dir, classes=['nodetect', 'es'], augmentation=get_training_augmentation())
-
-image, mask = dataset[10] # get some sample
-visualize(
-    image=image,
-    substation_mask=mask[..., 1].squeeze(),
-)
-
 BACKBONE = 'resnet34'
-BATCH_SIZE = 8
+BATCH_SIZE = 4
 CLASSES = ['es']
 LR = 0.0001
-EPOCHS = 150
-version = 8
+EPOCHS = 50
+version = 1
+
 
 preprocess_input = sm.get_preprocessing(BACKBONE)
 # define network parameters
@@ -297,7 +261,6 @@ metrics = [sm.metrics.IOUScore(threshold=0.5), sm.metrics.FScore(threshold=0.5)]
 
 # compile keras model with defined optimozer, loss and metrics
 model.compile(optim, total_loss, metrics)
-
 # Dataset for train images
 train_dataset = Dataset(
     x_train_dir,
@@ -306,7 +269,6 @@ train_dataset = Dataset(
     augmentation=get_training_augmentation(),
     preprocessing=get_preprocessing(preprocess_input),
 )
-
 # Dataset for validation images
 valid_dataset = Dataset(
     x_valid_dir,
@@ -325,77 +287,39 @@ assert train_dataloader[0][1].shape == (BATCH_SIZE, IMG_SIZE, IMG_SIZE, n_classe
 
 # define callbacks for learning rate scheduling and best checkpoints saving
 callbacks = [
-    keras.callbacks.ModelCheckpoint('/kaggle/working/best_model_v%d.h5'%version, save_weights_only=True,save_best_only=True, mode='min', verbose=1),
+    keras.callbacks.ModelCheckpoint('./best_model_v%d.h5'%version, save_weights_only=True,save_best_only=True, mode='min', verbose=1),
     keras.callbacks.ReduceLROnPlateau(factor=0.5, verbose=1),
 ]
 
-with open('/kaggle/working/ModelSummary_v%d.txt'%version, 'w') as f:
-  model.summary(print_fn=f.write)
+with open('./ModelSummary_v%d.txt'%version, 'w') as f:
+    model.summary(print_fn=f.write)
 # model.summary()
-
 # train model
-history = model.fit_generator(
-    train_dataloader,
-    steps_per_epoch=len(train_dataloader),
-    epochs=EPOCHS,
-    callbacks=callbacks,
-    validation_data=valid_dataloader,
-    validation_steps=len(valid_dataloader),
-)
+if __name__=="__main__":
+    history = model.fit_generator(
+        train_dataloader,
+        steps_per_epoch=len(train_dataloader),
+        epochs=EPOCHS,
+        callbacks=callbacks,
+        validation_data=valid_dataloader,
+        validation_steps=len(valid_dataloader),
+    )
+    plt.figure(figsize=(30, 10))
+    plt.subplot(121)
+    plt.plot(history.history['iou_score'])
+    plt.plot(history.history['val_iou_score'])
+    plt.title('Model iou_score')
+    plt.ylabel('iou_score')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Test'], loc='upper left')
 
-# Plot training & validation iou_score values
-plt.figure(figsize=(30, 10))
-plt.subplot(121)
-plt.plot(history.history['iou_score'])
-plt.plot(history.history['val_iou_score'])
-plt.title('Model iou_score')
-plt.ylabel('iou_score')
-plt.xlabel('Epoch')
-plt.legend(['Train', 'Test'], loc='upper left')
-
-# Plot training & validation loss values
-plt.subplot(122)
-plt.plot(history.history['loss'])
-plt.plot(history.history['val_loss'])
-plt.title('Model loss')
-plt.ylabel('Loss')
-plt.xlabel('Epoch')
-plt.legend(['Train', 'Test'], loc='upper left')
-plt.savefig('/kaggle/working/TrainingSummary_v%d.jpg'%version)
-plt.show()
-test_img = imread('../input/electrical-substation-detection/test/mosaic_test.jpg')
-out_mask = np.zeros((test_img.shape[0], test_img.shape[1]))
-
-img_x, img_y = 768, 768
-
-# test_model = keras.models.load_model('/kaggle/working/best_model_v%d.h5'%version)
-model.load_weights('/kaggle/working/best_model_v%d.h5'%version)
-for i in range(5):
-    for j in range(5):
-        image = np.zeros((768,768,3))
-        image[:750, :750] = test_img[i*750:(i+1)*750, j*750:(j+1)*750]
-        image = get_preprocessing(preprocessing_fn=preprocess_input)(image=image)['image']
-        image = np.expand_dims(image, axis=0)
-        out_mask[i*750:(i+1)*750, j*750:(j+1)*750] = model.predict(image)[0,:750,:750,0]
-
-
-visualize(
-    image=denormalize(test_img.squeeze()),
-    out_mask=out_mask,
-    out_mask_rounded=out_mask.round()
-)
-
-plt.imsave('/kaggle/working/OutMaskv%d.jpg'%version, out_mask.round(), cmap='gray')
-np.save("/kaggle/working/out_mask_v%d.npy"%version, np.array(out_mask))
-
-i=1
-j=3
-
-image = np.zeros((768,768,3))
-
-image[:750, :750] = test_img[i*750:(i+1)*750, j*750:(j+1)*750]
-image = get_preprocessing(preprocessing_fn=preprocess_input)(image=image)['image']
-image = np.expand_dims(image, axis=0)
-out_mask= model.predict(image)[0,:750,:750,0]
-
-visualize(Input=test_img[i*750:(i+1)*750, j*750:(j+1)*750], Model_Results=out_mask, Predicted=out_mask.round())
+    # Plot training & validation loss values
+    plt.subplot(122)
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('Model loss')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Test'], loc='upper left')
+    plt.savefig('./TrainingSummary_v%d.jpg'%version)
+    plt.show()
